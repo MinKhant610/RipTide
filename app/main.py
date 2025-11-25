@@ -1,21 +1,14 @@
 from pydantic import BaseModel
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from app.weather import fetch_openweather, fetch_weatherbit
 from app.flood_model import build_flood_input
 from app.gemini import ask_gemini
+import requests
 
 app = FastAPI()
 
-# ----------------------------
-# 1. Input model for JSON test
-# ----------------------------
-class FloodInput(BaseModel):
-    date: str
+class LocationOnly(BaseModel):
     location: str
-    lat: float
-    lon: float
-    openweather_like: dict
-    weatherbit_like: dict
 
 
 @app.get("/")
@@ -23,9 +16,35 @@ def home():
     return {"message": "Flood Detection API working"}
 
 
-# ----------------------------
-# 2. Existing GET version
-# ----------------------------
+def geocode_location(location: str):
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={location}&count=1"
+    res = requests.get(url).json()
+
+    if "results" not in res:
+        raise HTTPException(status_code=400, detail="Location not found")
+
+    info = res["results"][0]
+    return info["latitude"], info["longitude"]
+
+
+@app.post("/predict_location")
+def predict_location(data: LocationOnly):
+
+    lat, lon = geocode_location(data.location)
+    ow = fetch_openweather(data.location)
+    wb = fetch_weatherbit(lat, lon)
+
+    flood_input = build_flood_input(data.location, lat, lon, ow, wb)
+
+    result = ask_gemini(flood_input)
+
+    return {
+        "location": data.location,
+        "latitude": lat,
+        "longitude": lon,
+        "prediction": result
+    }
+
 @app.get("/predict")
 def predict(city: str, lat: float, lon: float):
 
@@ -41,14 +60,18 @@ def predict(city: str, lat: float, lon: float):
         "prediction": result
     }
 
+class FloodInput(BaseModel):
+    date: str
+    location: str
+    lat: float
+    lon: float
+    openweather_like: dict
+    weatherbit_like: dict
 
-# ----------------------------
-# 3. New POST version for JSON
-# ----------------------------
+
 @app.post("/predict_json")
 def predict_json(data: FloodInput):
 
-    # Pass JSON directly to Gemini
     result = ask_gemini(data.model_dump())
 
     return {
