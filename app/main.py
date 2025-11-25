@@ -1,49 +1,28 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException
+
 from app.weather import fetch_openweather, fetch_weatherbit
 from app.flood_model import build_flood_input
 from app.gemini import ask_gemini
-import requests
 
 app = FastAPI()
 
-class LocationOnly(BaseModel):
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # allow all domains
+    allow_credentials=True,
+    allow_methods=["*"],          # allow POST, GET, etc.
+    allow_headers=["*"],
+)
+
+class LocationInput(BaseModel):
     location: str
 
 
 @app.get("/")
 def home():
     return {"message": "Flood Detection API working"}
-
-
-def geocode_location(location: str):
-    url = f"https://geocoding-api.open-meteo.com/v1/search?name={location}&count=1"
-    res = requests.get(url).json()
-
-    if "results" not in res:
-        raise HTTPException(status_code=400, detail="Location not found")
-
-    info = res["results"][0]
-    return info["latitude"], info["longitude"]
-
-
-@app.post("/predict_location")
-def predict_location(data: LocationOnly):
-
-    lat, lon = geocode_location(data.location)
-    ow = fetch_openweather(data.location)
-    wb = fetch_weatherbit(lat, lon)
-
-    flood_input = build_flood_input(data.location, lat, lon, ow, wb)
-
-    result = ask_gemini(flood_input)
-
-    return {
-        "location": data.location,
-        "latitude": lat,
-        "longitude": lon,
-        "prediction": result
-    }
 
 @app.get("/predict")
 def predict(city: str, lat: float, lon: float):
@@ -52,7 +31,6 @@ def predict(city: str, lat: float, lon: float):
     wb = fetch_weatherbit(lat, lon)
 
     flood_input = build_flood_input(city, lat, lon, ow, wb)
-
     result = ask_gemini(flood_input)
 
     return {
@@ -60,21 +38,29 @@ def predict(city: str, lat: float, lon: float):
         "prediction": result
     }
 
-class FloodInput(BaseModel):
-    date: str
-    location: str
-    lat: float
-    lon: float
-    openweather_like: dict
-    weatherbit_like: dict
+@app.post("/predict_location")
+def predict_location(data: LocationInput):
 
+    city = data.location
 
-@app.post("/predict_json")
-def predict_json(data: FloodInput):
+    # Fetch weather from your existing functions
+    ow = fetch_openweather(city)
 
-    result = ask_gemini(data.model_dump())
+    # Weatherbit requires lat/lon → get from OpenWeather data
+    lat = ow["coord"]["lat"]
+    lon = ow["coord"]["lon"]
+
+    wb = fetch_weatherbit(lat, lon)
+
+    # Build ML model input
+    flood_input = build_flood_input(city, lat, lon, ow, wb)
+
+    # Run Gemini
+    result = ask_gemini(flood_input)
 
     return {
-        "city": data.location,
+        "city": city,
+        "lat": lat,
+        "lon": lon,
         "prediction": result
     }
